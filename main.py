@@ -1,51 +1,74 @@
-from fastapi import FastAPI
-from models import Action
+from fastapi import FastAPI, Body
+from models import Action, Observation, StepResult
 from environment import AutoMindEnv
 
-app = FastAPI()
+app = FastAPI(title="AutoMind OpenEnv", version="1.0.0")
 env = AutoMindEnv()
 
 
 @app.get("/")
+def root():
+    return {
+        "status": "AutoMind OpenEnv running",
+        "initialized": env.is_initialized(),
+    }
+
+
+@app.get("/health")
 def health():
-    return {"status": "AutoMind OpenEnv running"}
+    return {
+        "status": "healthy",
+        "initialized": env.is_initialized(),
+        "task": env.current_task,
+        "difficulty": env.current_difficulty,
+        "update_interval_seconds": env.update_interval_seconds,
+    }
 
 
 @app.post("/reset")
-def reset(task_name: str = "fault_diagnosis", difficulty: str = "easy"):
-    obs = env.reset(task_name, difficulty)
+def reset(payload: dict = Body(default_factory=dict)):
+    task_name = payload.get("task_name", "fault_diagnosis")
+    difficulty = payload.get("difficulty", "easy")
+    obs = env.reset(task_name=task_name, difficulty=difficulty)
     return {"observation": obs.model_dump()}
 
 
 @app.post("/step")
 def step(action: Action):
     result = env.step(action)
-    return {
-        "observation": result.observation.model_dump(),
-        "reward": result.reward,
-        "done": result.done,
-        "info": result.info,
-        "metrics": result.metrics.model_dump(),
-    }
+    return result.model_dump()
 
 
-# 🔥 FIXED STATE ENDPOINT
 @app.get("/state")
 def state():
-    try:
-        return env.get_full_state()
-    except Exception as e:
-        return {"error": str(e)}
+    return env.get_full_state()
 
 
 @app.get("/tasks")
 def tasks():
-    return ["fault_diagnosis", "driving_decision", "autonomous_control"]
+    return {
+        "tasks": [
+            {
+                "name": "fault_diagnosis",
+                "difficulty": "easy",
+                "goal": "Detect overheating, low oil, or battery issue correctly",
+            },
+            {
+                "name": "driving_decision",
+                "difficulty": "medium",
+                "goal": "Choose the safest immediate action from current vehicle context",
+            },
+            {
+                "name": "autonomous_control",
+                "difficulty": "hard",
+                "goal": "Handle diagnosis, safety, override, GPS-aware service recommendation, and control",
+            },
+        ]
+    }
 
 
 @app.get("/schema")
 def schema():
-    from models import Observation, Action, StepResult
     return {
         "Observation": Observation.model_json_schema(),
         "Action": Action.model_json_schema(),
