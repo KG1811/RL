@@ -1,147 +1,154 @@
-# ==============================
-# AutoMind OpenEnv - Inference Script (FINAL)
-# ==============================
-
+import json
 import os
-import requests
+from typing import Optional
 
-from models import Action
+import requests
+from openai import OpenAI
+
 from agent import agent_step
+from models import Action, Observation, Metrics
 from tasks import evaluate_task
 
-# ------------------------------
-# ENV CONFIG (MANDATORY)
-# ------------------------------
 API_BASE_URL = os.getenv("API_BASE_URL", "http://127.0.0.1:8000")
-MODEL_NAME = os.getenv("MODEL_NAME", "automind-agent")  # not used but required
-HF_TOKEN = os.getenv("HF_TOKEN", "dummy")  # not used but required
-
+MODEL_NAME = os.getenv("MODEL_NAME", "gpt-4o-mini")
+HF_TOKEN = os.getenv("HF_TOKEN", "")
 MAX_STEPS = 20
+TEMPERATURE = 0.1
 
 
-# ------------------------------
-# HELPER: PRINT STATE
-# ------------------------------
-def print_state(step, obs):
+def print_state(step: int, obs: dict) -> None:
     print(f"\nSTEP {step}")
-    print("STATE:")
-    print(f"  Speed: {obs['speed']}")
-    print(f"  Distance: {obs['distance_to_obstacle']}")
-    print(f"  Temp: {obs['engine_temp']}")
-    print(f"  Oil: {obs['oil_level']}")
-    print(f"  Battery: {obs['battery_health']}")
+    print(f"Speed: {obs['speed']} km/h")
+    print(f"RPM: {obs['rpm']}")
+    print(f"Throttle: {obs['throttle']} %")
+    print(f"Gear: {obs['gear']}")
+    print(f"Engine Temp: {obs['engine_temp']} C")
+    print(f"Oil: {obs['oil_level']} %")
+    print(f"Battery: {obs['battery_health']} %")
+    print(f"Distance: {obs['distance_to_obstacle']} m")
+    print(f"GPS: ({obs['latitude']}, {obs['longitude']})")
 
 
-# ------------------------------
-# MAIN RUN FUNCTION
-# ------------------------------
-def run_episode(task_name="autonomous_control", difficulty="medium"):
+def build_prompt(observation: dict) -> str:
+    return f"""
+You are controlling an automotive agent.
+Return JSON only in this format:
+{{
+  "action_type": "brake",
+  "value": 0.7,
+  "reason": "short reason"
+}}
 
-    print("\n" + "=" * 50)
-    print(f"RUNNING TASK: {task_name.upper()} | DIFFICULTY: {difficulty.upper()}")
-    print("=" * 50)
+Observation:
+{json.dumps(observation, indent=2)}
 
-    # --------------------------
-    # RESET
-    # --------------------------
+Choose one of:
+brake, accelerate, turn_left, turn_right, continue, stop, request_service
+""".strip()
+
+
+def get_model_action(observation: dict) -> Optional[Action]:
+    if not HF_TOKEN:
+        return None
+
+    try:
+        client = OpenAI(
+            base_url=API_BASE_URL,
+            api_key=HF_TOKEN,
+        )
+
+        completion = client.chat.completions.create(
+            model=MODEL_NAME,
+            messages=[{"role": "user", "content": build_prompt(observation)}],
+            temperature=TEMPERATURE,
+            max_tokens=120,
+        )
+
+        text = completion.choices[0].message.content or ""
+        payload = json.loads(text)
+
+        return Action(
+            action_type=payload["action_type"],
+            value=float(payload["value"]),
+            reason=payload["reason"],
+        )
+    except Exception:
+        return None
+
+
+def run_episode(task_name: str = "autonomous_control", difficulty: str = "medium") -> float:
+    print("\n" + "=" * 60)
+    print(f"TASK={task_name} | DIFFICULTY={difficulty}")
+    print("=" * 60)
+
     response = requests.post(
         f"{API_BASE_URL}/reset",
         json={"task_name": task_name, "difficulty": difficulty},
+        timeout=30,
     )
+    response.raise_for_status()
 
-    data = response.json()
-    obs = data["observation"]
+    obs = response.json()["observation"]
 
     last_action = None
     last_metrics = None
+    final_observation = None
 
-    # --------------------------
-    # LOOP
-    # --------------------------
-    for step in range(1, MAX_STEPS + 1):
+    for step_idx in range(1, MAX_STEPS + 1):
+        print_state(step_idx, obs)
 
-        print_state(step, obs)
-
-        # Convert dict → object for agent
-        from models import Observation
+        llm_action = get_model_action(obs)
         observation_obj = Observation(**obs)
 
-        # ----------------------
-        # AGENT STEP
-        # ----------------------
-        action = agent_step(observation_obj)
+        if llm_action is not None:
+            action = llm_action
+            source = "llm"
+        else:
+            action = agent_step(observation_obj)
+            source = "fallback_agent"
 
-        print("\nACTION:")
-        print(f"  {action.action_type} ({action.value})")
-        print(f"  Reason: {action.reason}")
+        print(f"\nACTION SOURCE: {source}")
+        print(f"ACTION: {action.action_type} ({action.value}) | {action.reason}")
 
-        # ----------------------
-        # CALL STEP API
-        # ----------------------
-        response = requests.post(
+        step_response = requests.post(
             f"{API_BASE_URL}/step",
-            json={
-                "action_type": action.action_type,
-                "value": action.value,
-                "reason": action.reason,
-            },
+            json=action.model_dump(),
+            timeout=30,
         )
+        step_response.raise_for_status()
 
-        result = response.json()
-
+        result = step_response.json()
         obs = result["observation"]
         reward = result["reward"]
         done = result["done"]
         metrics = result["metrics"]
 
-        print("\nRESULT:")
-        print(f"  Reward: {reward}")
-        print(f"  Done: {done}")
-
-        print("\nMETRICS:")
-        print(metrics)
-
-        print("\nINFO:")
-        print(result["info"])
+        print(f"REWARD: {reward}")
+        print(f"DONE: {done}")
+        print(f"METRICS: {metrics}")
+        print(f"INFO: {result['info']}")
 
         last_action = action
-        last_metrics = metrics
+        last_metrics = Metrics(**metrics)
+        final_observation = Observation(**obs)
 
         if done:
-            print("\nEPISODE FINISHED")
             break
 
-    # --------------------------
-    # FINAL SCORE (CRITICAL)
-    # --------------------------
     final_score = evaluate_task(
         task_name=task_name,
         action=last_action,
-        observation=observation_obj,
+        observation=final_observation or Observation(**obs),
         metrics=last_metrics,
     )
 
-    print("\n" + "=" * 50)
-    print("FINAL SCORE:", final_score)
-    print("=" * 50)
-
+    print("\nFINAL SCORE:", final_score)
     return final_score
 
 
-# ------------------------------
-# MAIN
-# ------------------------------
 if __name__ == "__main__":
-
     scores = []
-
     for difficulty in ["easy", "medium", "hard"]:
-        score = run_episode(
-            task_name="autonomous_control",
-            difficulty=difficulty,
-        )
-        scores.append(score)
+        scores.append(run_episode(task_name="autonomous_control", difficulty=difficulty))
 
-    print("\n" + "=" * 50)
-    print("AVERAGE SCORE:", sum(scores) / len(scores))
-    print("=" * 50)
+    print("\nAVERAGE SCORE:", round(sum(scores) / len(scores), 3))
