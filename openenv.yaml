@@ -2,27 +2,18 @@ name: automind-openenv
 version: "1.0.0"
 
 description: >
-  AutoMind OpenEnv is a real-world automotive decision-making environment
-  where an AI agent performs fault diagnosis, driving decisions, and full
-  autonomous control under realistic conditions including noise, failures,
-  and human override.
+  AutoMind OpenEnv is a real-world automotive diagnosis, driving-decision,
+  and autonomous-control environment. It simulates ECU and TCU telemetry,
+  failures, traffic, GPS-aware service recommendation, reward shaping,
+  deterministic graders, and a live HTTP interface.
 
-# ------------------------------
-# ENTRYPOINT (FastAPI)
-# ------------------------------
 entrypoint: main:app
 
-# ------------------------------
-# ENDPOINTS (MANDATORY)
-# ------------------------------
 endpoints:
   reset: /reset
   step: /step
   state: /state
 
-# ------------------------------
-# ACTION SPACE
-# ------------------------------
 action_space:
   type: object
   properties:
@@ -43,54 +34,48 @@ action_space:
     reason:
       type: string
 
-# ------------------------------
-# OBSERVATION SPACE
-# ------------------------------
 observation_space:
   type: object
   properties:
-    speed:
-      type: number
-    engine_temp:
-      type: number
-    distance_to_obstacle:
-      type: number
+    speed: { type: number }
+    rpm: { type: number }
+    throttle: { type: number }
+    gear: { type: integer }
+    engine_load: { type: number }
+    transmission_load: { type: number }
+    fuel_rate: { type: number }
+    acceleration: { type: number }
+    engine_temp: { type: number }
+    distance_to_obstacle: { type: number }
     road_condition:
       type: string
       enum: [dry, wet, rain]
-    oil_level:
-      type: number
-    battery_health:
-      type: number
-    failures:
-      type: object
-    history:
-      type: array
+    drive_mode:
+      type: string
+      enum: [idle, city, cruise, sport]
+    oil_level: { type: number }
+    battery_health: { type: number }
+    latitude: { type: number }
+    longitude: { type: number }
+    heading: { type: number }
+    failures: { type: object }
+    history: { type: array }
 
-# ------------------------------
-# TASKS (IMPORTANT)
-# ------------------------------
 tasks:
   - name: fault_diagnosis
-    description: Detect vehicle faults such as overheating, low oil, or battery issues
+    description: Detect overheating, low oil, or battery issue
     difficulty: easy
 
   - name: driving_decision
-    description: Choose safe driving actions based on environment state
+    description: Choose safe driving actions from live telemetry
     difficulty: medium
 
   - name: autonomous_control
-    description: Full pipeline including diagnosis, safety handling, and decision-making
+    description: Full diagnosis + control + override + service recommendation
     difficulty: hard
 
-# ------------------------------
-# ENVIRONMENT METADATA
-# ------------------------------
 environment:
   max_steps: 20
   deterministic: true
 
-# ------------------------------
-# TEAM INFO (OPTIONAL BUT GOOD)
-# ------------------------------
 author: CosmoTech Team
