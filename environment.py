@@ -14,6 +14,7 @@ from models import (
 )
 from simulator import AutoMindSimulator
 from service_engine import find_nearest_service
+from tasks import grade_driving_decision, grade_fault_diagnosis
 
 
 class AutoMindEnv:
@@ -53,10 +54,13 @@ class AutoMindEnv:
             "outcome": "not_initialized",
             "collision_risk": 0.0,
             "override_active": False,
+            "override_count": 0,
+            "step_count": 0,
             "health_score": 100,
             "alerts": [],
             "service_recommended": None,
             "service_booking": None,
+            "task_score": 0.0,
         }
 
 
@@ -98,7 +102,7 @@ class AutoMindEnv:
                 fuel_rate=2.6,
                 acceleration=0.3,
                 engine_temp=97.0,
-                distance_to_obstacle=34.0,
+                distance_to_obstacle=48.0,
                 road_condition="wet",
                 drive_mode="cruise",
                 oil_level=31.0,
@@ -111,20 +115,20 @@ class AutoMindEnv:
 
         if difficulty == "hard":
             return TelemetryState(
-                speed=61.0,
-                rpm=3150.0,
-                throttle=52.0,
-                gear=4,
-                engine_load=72.0,
-                transmission_load=61.0,
-                fuel_rate=3.9,
-                acceleration=0.2,
-                engine_temp=113.0,
-                distance_to_obstacle=16.0,
+                speed=44.0,
+                rpm=2580.0,
+                throttle=36.0,
+                gear=3,
+                engine_load=58.0,
+                transmission_load=46.0,
+                fuel_rate=2.8,
+                acceleration=0.1,
+                engine_temp=109.0,
+                distance_to_obstacle=68.0,
                 road_condition="rain",
-                drive_mode="sport",
-                oil_level=18.0,
-                battery_health=58.0,
+                drive_mode="cruise",
+                oil_level=24.0,
+                battery_health=62.0,
                 latitude=28.613900,
                 longitude=77.209000,
                 heading=38.0,
@@ -181,6 +185,18 @@ class AutoMindEnv:
         self.last_action = Action(action_type="continue", value=0.25, reason="background cruise")
         self.last_done = False
         self.last_reward = 0.0
+        self.last_info = {
+            "outcome": "in_progress",
+            "collision_risk": 0.0,
+            "override_active": False,
+            "override_count": 0,
+            "step_count": 0,
+            "health_score": 100,
+            "alerts": [],
+            "service_recommended": None,
+            "service_booking": None,
+            "task_score": 0.0,
+        }
 
         self.last_metrics = self._compute_metrics(
             collision_risk=0.02,
@@ -297,11 +313,40 @@ class AutoMindEnv:
             "outcome": self.get_episode_outcome(),
             "collision_risk": round(collision_risk, 3),
             "override_active": self.override_active,
+            "override_count": self.override_count,
+            "step_count": self.episode_state.step_count,
             "health_score": health_score,
             "alerts": alerts,
             "service_recommended": service_recommended,
             "service_booking": service_booking,
+            "task_score": self.last_info.get("task_score", 0.0),
         }
+
+    def _finish_task_episode(
+        self,
+        reward: float,
+        info_updates: dict,
+        metrics: Metrics,
+    ) -> StepResult:
+        self.last_reward = max(0.0, min(1.0, round(reward, 3)))
+        self.last_done = True
+        self.last_metrics = metrics
+        self.last_info = {
+            **self.last_info,
+            **info_updates,
+            "override_active": self.override_active,
+            "override_count": self.override_count,
+            "step_count": self.episode_state.step_count,
+            "task_score": round(reward, 3),
+        }
+
+        return StepResult(
+            observation=self.current_observation,
+            reward=self.last_reward,
+            done=self.last_done,
+            info=self.last_info,
+            metrics=self.last_metrics,
+        )
 
     def _compute_reward(
         self,
@@ -371,10 +416,38 @@ class AutoMindEnv:
         if self.current_difficulty is None:
             raise RuntimeError("Call reset() first.")
 
+        if self.current_task == "fault_diagnosis":
+            self.last_action = action
+            self.episode_state.step_count += 1
+            score = grade_fault_diagnosis(action, self.current_observation)
+            self.last_info = self._build_info(
+                observation=self.current_observation,
+                collision_risk=0.02,
+                action_type=action.action_type,
+            )
+            return self._finish_task_episode(
+                reward=score,
+                info_updates={
+                    "outcome": "success_diagnosis" if score >= 1.0 else "failure_diagnosis",
+                },
+                metrics=Metrics(
+                    safety_score=1.0,
+                    efficiency_score=0.0,
+                    diagnosis_score=score,
+                    sequence_score=1.0,
+                ),
+            )
+
+        pre_action_observation = self.current_observation
+
         self.override_active = self.episode_state.step_count > 0 and self.episode_state.step_count % 3 == 0
 
         applied_action = action
-        if self.override_active and action.action_type in ["stop", "brake"]:
+        if (
+            self.override_active
+            and action.action_type in ["stop", "brake"]
+            and self.current_observation.distance_to_obstacle > 25
+        ):
             self.override_count += 1
             applied_action = Action(
                 action_type="accelerate",
@@ -417,6 +490,30 @@ class AutoMindEnv:
             collision_risk=transition["collision_risk"],
             action_type=applied_action.action_type,
         )
+        self.last_info["task_score"] = round(self.last_reward, 3)
+
+        if self.current_task == "driving_decision":
+            decision_score = grade_driving_decision(action, pre_action_observation)
+            decision_reward = 0.75 * decision_score + 0.25 * self.last_metrics.safety_score
+            return self._finish_task_episode(
+                reward=decision_reward,
+                info_updates={
+                    "outcome": (
+                        "success_safe_decision"
+                        if decision_score >= 0.7
+                        and not transition["is_collision"]
+                        and transition["collision_risk"] < 0.7
+                        else "failure_unsafe_decision"
+                    ),
+                    "decision_score": round(decision_score, 3),
+                },
+                metrics=Metrics(
+                    safety_score=self.last_metrics.safety_score,
+                    efficiency_score=self.last_metrics.efficiency_score,
+                    diagnosis_score=decision_score,
+                    sequence_score=1.0,
+                ),
+            )
 
         return StepResult(
             observation=self.current_observation,

@@ -6,120 +6,160 @@ import requests
 from openai import OpenAI
 
 from agent import agent_step
-from models import Action, Observation, Metrics
+from environment import AutoMindEnv
+from models import Action, Metrics, Observation
 from tasks import evaluate_task
 
-API_BASE_URL = os.getenv("API_BASE_URL", "http://127.0.0.1:8000")
+API_BASE_URL = os.getenv("API_BASE_URL", "https://api.openai.com/v1")
+ENV_BASE_URL = os.getenv("ENV_BASE_URL", "http://127.0.0.1:8000")
 MODEL_NAME = os.getenv("MODEL_NAME", "gpt-4o-mini")
-HF_TOKEN = os.getenv("HF_TOKEN", "")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY") or os.getenv("HF_TOKEN", "")
 MAX_STEPS = 20
 TEMPERATURE = 0.1
 
 
+def build_prompt(observation: dict, task_name: str) -> str:
+    if task_name == "fault_diagnosis":
+        instruction = (
+            'Choose exactly one action: "diagnose". Put the predicted fault in "reason". '
+            'Valid fault labels: engine_overheating, low_oil, battery_issue, no_fault.'
+        )
+    elif task_name == "driving_decision":
+        instruction = (
+            'Choose the single safest next action. Valid actions: brake, accelerate, '
+            'turn_left, turn_right, continue, stop.'
+        )
+    else:
+        instruction = (
+            "Control the vehicle safely over the episode. Valid actions: brake, accelerate, "
+            "turn_left, turn_right, continue, stop, request_service."
+        )
 
-
-def build_prompt(observation: dict) -> str:
     return f"""
-You are controlling an automotive agent.
+You are controlling an automotive agent for the task "{task_name}".
 Return JSON only in this format:
 {{
-  "action_type": "brake",
-  "value": 0.7,
+  "action_type": "string",
+  "value": 0.0,
   "reason": "short reason"
 }}
 
+{instruction}
+
 Observation:
 {json.dumps(observation, indent=2)}
-
-Choose one of:
-brake, accelerate, turn_left, turn_right, continue, stop, request_service
 """.strip()
 
 
-def get_model_action(observation: dict, task_name: str = "autonomous_control") -> Optional[Action]:
-    if not HF_TOKEN:
+def get_model_action(observation: dict, task_name: str) -> Optional[Action]:
+    if not OPENAI_API_KEY:
         return None
 
     try:
-        client = OpenAI(
-            base_url=API_BASE_URL,
-            api_key=HF_TOKEN,
-        )
-
+        client = OpenAI(base_url=API_BASE_URL, api_key=OPENAI_API_KEY)
         completion = client.chat.completions.create(
             model=MODEL_NAME,
-            messages=[{"role": "user", "content": build_prompt(observation)}],
+            messages=[{"role": "user", "content": build_prompt(observation, task_name)}],
             temperature=TEMPERATURE,
             max_tokens=120,
         )
-
         text = completion.choices[0].message.content or ""
         payload = json.loads(text)
-
-        action_type = payload.get("action_type")
-        if task_name == "fault_diagnosis":
-            action_type = "diagnose"
-            
         return Action(
-            action_type=action_type,
-            value=float(payload["value"]),
-            reason=payload["reason"],
+            action_type=str(payload["action_type"]).strip(),
+            value=float(payload.get("value", 1.0)),
+            reason=str(payload.get("reason", "")).strip(),
         )
     except Exception:
         return None
 
 
-def run_episode(task_name: str = "autonomous_control", difficulty: str = "medium") -> float:
+class EnvClient:
+    def __init__(self) -> None:
+        self.local_env: Optional[AutoMindEnv] = None
+        self.remote_available = self._check_remote()
+
+    def _check_remote(self) -> bool:
+        try:
+            response = requests.get(f"{ENV_BASE_URL}/health", timeout=3)
+            return response.ok
+        except Exception:
+            return False
+
+    def reset(self, task_name: str, difficulty: str) -> dict:
+        if self.remote_available:
+            response = requests.post(
+                f"{ENV_BASE_URL}/reset",
+                json={"task_name": task_name, "difficulty": difficulty},
+                timeout=30,
+            )
+            response.raise_for_status()
+            return response.json()["observation"]
+
+        if self.local_env is None:
+            self.local_env = AutoMindEnv()
+        return self.local_env.reset(task_name=task_name, difficulty=difficulty).model_dump()
+
+    def step(self, action: Action) -> dict:
+        if self.remote_available:
+            response = requests.post(
+                f"{ENV_BASE_URL}/step",
+                json=action.model_dump(),
+                timeout=30,
+            )
+            response.raise_for_status()
+            return response.json()
+
+        if self.local_env is None:
+            raise RuntimeError("Local environment is not initialized")
+        return self.local_env.step(action).model_dump()
+
+    def mode(self) -> str:
+        return "http" if self.remote_available else "local"
+
+
+def run_episode(client: EnvClient, task_name: str, difficulty: str) -> float:
     print("[START]")
-    print(json.dumps({"task": task_name, "difficulty": difficulty}))
+    print(json.dumps({"task": task_name, "difficulty": difficulty, "runner": client.mode()}))
 
-    response = requests.post(
-        f"{API_BASE_URL}/reset",
-        json={"task_name": task_name, "difficulty": difficulty},
-        timeout=30,
-    )
-    response.raise_for_status()
-
-    obs = response.json()["observation"]
-
+    obs = client.reset(task_name=task_name, difficulty=difficulty)
     last_action = None
     last_metrics = None
-    final_observation = None
+    last_info = None
 
     for step_idx in range(1, MAX_STEPS + 1):
-        llm_action = get_model_action(obs, task_name=task_name)
         observation_obj = Observation(**obs)
-
-        if llm_action is not None:
-            action = llm_action
-        else:
-            action = agent_step(observation_obj, task_name=task_name)
-
-        step_response = requests.post(
-            f"{API_BASE_URL}/step",
-            json=action.model_dump(),
-            timeout=30,
+        action = get_model_action(obs, task_name=task_name) or agent_step(
+            observation_obj,
+            task_name=task_name,
         )
-        step_response.raise_for_status()
 
-        result = step_response.json()
+        result = client.step(action)
         obs = result["observation"]
         reward = result["reward"]
         done = result["done"]
         metrics = result["metrics"]
+        info = result["info"]
 
         print("[STEP]")
-        print(json.dumps({
-            "observation": obs,
-            "action": action.model_dump(),
-            "reward": reward,
-            "done": done,
-            "info": result["info"]
-        }))
+        print(
+            json.dumps(
+                {
+                    "task": task_name,
+                    "difficulty": difficulty,
+                    "step": step_idx,
+                    "observation": obs,
+                    "action": action.model_dump(),
+                    "reward": reward,
+                    "done": done,
+                    "info": info,
+                }
+            )
+        )
 
         last_action = action
         last_metrics = Metrics(**metrics)
-        final_observation = Observation(**obs)
+        last_info = info
 
         if done:
             break
@@ -127,33 +167,27 @@ def run_episode(task_name: str = "autonomous_control", difficulty: str = "medium
     final_score = evaluate_task(
         task_name=task_name,
         action=last_action,
-        observation=final_observation or Observation(**obs),
+        observation=Observation(**obs),
         metrics=last_metrics,
+        info=last_info,
     )
 
     print("[END]")
-    print(json.dumps({"final_score": final_score}))
+    print(
+        json.dumps(
+            {
+                "task": task_name,
+                "difficulty": difficulty,
+                "final_score": final_score,
+                "outcome": (last_info or {}).get("outcome"),
+            }
+        )
+    )
     return final_score
 
 
 if __name__ == "__main__":
-    tasks = ["fault_diagnosis", "driving_decision", "autonomous_control"]
-    difficulties = ["easy", "medium", "hard"]
-
-    results = {}
-    
-    for task in tasks:
-        results[task] = {}
-        for diff in difficulties:
-            score = run_episode(task_name=task, difficulty=diff)
-            results[task][diff] = score
-
-    print("\n==============================")
-    print("      BASELINE RESULTS")
-    print("==============================\n")
-    for task, diffs in results.items():
-        print(f"[{task.upper()}]")
-        for diff, score in diffs.items():
-            print(f"  {diff.capitalize()}: {score:.3f}")
-        avg_score = sum(diffs.values()) / len(diffs)
-        print(f"  --> Average: {avg_score:.3f}\n")
+    client = EnvClient()
+    for task_name in ["fault_diagnosis", "driving_decision", "autonomous_control"]:
+        for difficulty in ["easy", "medium", "hard"]:
+            run_episode(client=client, task_name=task_name, difficulty=difficulty)

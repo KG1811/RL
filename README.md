@@ -1,6 +1,6 @@
 # AutoMind OpenEnv
 
-AutoMind OpenEnv is a highly realistic automotive simulator built for the validation and benchmarking of AI Agents. The environment natively simulates ECU (Engine Control Unit) physics, vehicle dynamics, predictive failures, sensor noise, and environmental traffic pressure to create a deterministic, API-first testing ground for autonomous driving and diagnostic policies.
+AutoMind OpenEnv is a fleet maintenance and roadside decision benchmark for AI agents. It simulates the kind of telemetry-driven decisions that fleet operators, roadside support teams, and maintenance copilots make every day: diagnose a failing vehicle, choose the safest immediate maneuver, and coordinate recovery actions before the incident turns into downtime or a roadside emergency.
 
 ## Table of Contents
 - [Tasks & Grading](#tasks--grading)
@@ -16,11 +16,20 @@ AutoMind OpenEnv is a highly realistic automotive simulator built for the valida
 
 AutoMind evaluates agents across three increasing difficulty tiers:
 
-1. **`fault_diagnosis`**: Given raw ECU data, correctly diagnose ongoing engine or battery failures (Overheating, Low Oil, Battery Issue). Target action: `{"action_type": "diagnose", "reason": "<fault>"}`. (Difficulty: Easy).
-2. **`driving_decision`**: Evaluate live conditions and output the safest operational driving decision (`brake`, `accelerate`, etc.) based on speed and RPM. (Difficulty: Medium).
-3. **`autonomous_control`**: Full 20-step episode loop. The agent must sustain optimal driving, handle live human overrides safely, keep health high, and call for nearest-service interventions appropriately. (Difficulty: Hard).
+1. **`fault_diagnosis`**: Given raw ECU and vehicle health telemetry, identify the active roadside issue quickly enough for dispatch or maintenance triage. Target action: `{"action_type": "diagnose", "reason": "<fault>"}`. (Difficulty: Easy).
+2. **`driving_decision`**: Choose the safest immediate roadside maneuver when a vehicle is trending toward a hazardous condition. This mirrors the first decision an on-vehicle support agent or ADAS supervisor must make. (Difficulty: Medium).
+3. **`autonomous_control`**: Full 20-step recovery loop. The agent must balance safety, degradation management, service escalation, and operator override while preserving the vehicle and avoiding roadside failure. (Difficulty: Hard).
 
-All grader endpoints output a `0.0` to `1.0` normalized float score representing the success of the agent.
+All graders emit deterministic `0.0` to `1.0` scores. The benchmark rewards early diagnosis, safe intervention, and correct roadside escalation rather than only rewarding end-of-episode survival.
+
+### Real-World Utility
+
+This environment is designed to represent a real operational workflow instead of a toy driving task:
+
+- **Fleet maintenance triage**: decide whether a vehicle can continue, should stop, or needs immediate service.
+- **Roadside assistance dispatching**: recommend and book the nearest support center when a vehicle becomes unsafe.
+- **Predictive maintenance evaluation**: test whether an agent can act before low oil, overheating, or brake degradation turn into a costly breakdown.
+- **Human override handling**: evaluate robustness when a driver or operator partially overrides the agent's intended recovery behavior.
 
 ---
 
@@ -50,7 +59,7 @@ The server receives JSON matching the following schema:
 
 ## Observation Space
 
-The `Observation` received back maps strictly to physical telemetry and proxy metrics. None of the variables hold explicitly "solved" game state (e.g. `distance_to_obstacle` is purely hidden ground-truth, forcing the agent to infer collision risk from speed/throttle behavior).
+The `Observation` received back maps directly to vehicle telemetry and situational context so that the tasks remain learnable and programmatically gradable.
 
 | Parameter | Type | Range | Description |
 |-----------|------|-------|-------------|
@@ -59,9 +68,13 @@ The `Observation` received back maps strictly to physical telemetry and proxy me
 | `throttle` | Float | 0 - 100% | Pedal depress percentage. |
 | `gear` | Int | 0 - 6 | Current transmission gear. |
 | `engine_load`| Float | 0 - 100% | System load calculated by logic. |
+| `transmission_load`| Float | 0 - 100% | Transmission stress under current maneuver. |
 | `fuel_rate` | Float | 0 - 40 L/hr| Current consumption. |
 | `acceleration`| Float| -12 - +12 | Derivative of speed over time. |
 | `engine_temp` | Float | 0 - 150 C | Live temperature tracking. |
+| `distance_to_obstacle` | Float | 0 - 300 m | Perceived obstacle distance from onboard sensors. |
+| `road_condition` | String | dry/wet/rain | Traction context for the policy. |
+| `drive_mode` | String | idle/city/cruise/sport | Powertrain mode derived from telemetry. |
 | `oil_level` | Float | 0 - 100% | Remaining healthy oil %. |
 | `battery_health`| Float | 0 - 100% | High Voltage Battery %. |
 | `failures` | Object | boolean flags | Detected catastrophic faults. |
@@ -91,14 +104,14 @@ The server natively exposes standard OpenEnv hooks: `/reset`, `/step`, `/state`,
 
 ## Deploying to HuggingFace / Docker
 
-You can containerize this environment using the included multi-stage Docker deployment, which perfectly wraps the FastAPI interface for HuggingFace Spaces.
+You can containerize this environment using the included Docker deployment, which wraps the FastAPI interface for HuggingFace Spaces.
 
 ```dockerfile
 # Build image
 docker build -t automind-env .
 
-# Run container (Exposes on 8080 or port defined in Dockerfile)
-docker run -p 8080:8000 automind-env
+# Run container
+docker run -p 7860:7860 automind-env
 ```
 
 **HuggingFace Deployment Instructions:**
@@ -110,17 +123,22 @@ docker run -p 8080:8000 automind-env
 
 ## Baseline Inference & Scores
 
-You can execute a full loop benchmark using the bundled baseline evaluator. Ensure your environment variables contain the required tokens for AI inference.
+You can execute a full loop benchmark using the bundled baseline evaluator. Define the required environment variables before running:
 
 ```bash
-export API_BASE_URL="http://127.0.0.1:8000"
-export HF_TOKEN="<your_openai_or_hf_token>"
+export API_BASE_URL="https://api.openai.com/v1"
+export MODEL_NAME="gpt-4o-mini"
+export OPENAI_API_KEY="<your_openai_key>"
+export HF_TOKEN="<optional_fallback_token>"
+export ENV_BASE_URL="http://127.0.0.1:8000"
 
 python inference.py
 ```
 
-### Reproducible Baseline Results (Mock Target Example)
-*Score averages run deterministically on seeded physics iterations.*
+`inference.py` emits only structured `[START]`, `[STEP]`, and `[END]` stdout logs and falls back to a seeded local environment when the HTTP server is unavailable, making baseline runs reproducible for local validation.
+
+### Reproducible Baseline Results
+Measured locally with the bundled heuristic agent and the seeded fallback runner:
 
 ```text
 ==============================
@@ -134,14 +152,14 @@ python inference.py
   --> Average: 1.000
 
 [DRIVING_DECISION]
-  Easy: 0.810
-  Medium: 0.740
-  Hard: 0.615
-  --> Average: 0.721
+  Easy: 1.000
+  Medium: 1.000
+  Hard: 0.700
+  --> Average: 0.900
 
 [AUTONOMOUS_CONTROL]
-  Easy: 0.892
-  Medium: 0.814
-  Hard: 0.710
-  --> Average: 0.805
+  Easy: 0.731
+  Medium: 0.749
+  Hard: 0.481
+  --> Average: 0.654
 ```

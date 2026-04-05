@@ -3,7 +3,7 @@ from models import Action, Observation, StepResult
 from environment import AutoMindEnv
 import threading
 
-app = FastAPI(title="AutoMind OpenEnv", version="1.0.0")
+app = FastAPI(title="AutoMind OpenEnv Fleet Benchmark", version="1.0.0")
 
 envs: dict[str, AutoMindEnv] = {}
 envs_lock = threading.Lock()
@@ -18,7 +18,7 @@ def get_env(car_id: str) -> AutoMindEnv:
 @app.get("/")
 def root():
     return {
-        "status": "AutoMind OpenEnv running",
+        "status": "AutoMind OpenEnv fleet maintenance benchmark running",
         "active_cars": list(envs.keys()),
     }
 
@@ -65,17 +65,17 @@ def tasks():
             {
                 "name": "fault_diagnosis",
                 "difficulty": "easy",
-                "goal": "Detect overheating, low oil, or battery issue correctly",
+                "goal": "Identify the active fleet maintenance issue from telemetry before dispatching service",
             },
             {
                 "name": "driving_decision",
                 "difficulty": "medium",
-                "goal": "Choose the safest immediate action from current vehicle context",
+                "goal": "Choose the safest immediate roadside maneuver from current vehicle context",
             },
             {
                 "name": "autonomous_control",
                 "difficulty": "hard",
-                "goal": "Handle diagnosis, safety, override, GPS-aware service recommendation, and control",
+                "goal": "Recover the vehicle safely while handling overrides and coordinating roadside service",
             },
         ]
     }

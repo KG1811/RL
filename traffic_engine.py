@@ -22,7 +22,7 @@ def get_obstacle_relative_motion(
         return rng.uniform(-1.0, 2.0)
 
     if difficulty == "hard":
-        return rng.uniform(-3.0, 1.0)
+        return rng.uniform(-0.5, 2.0)
 
     return 0.0
 
@@ -41,6 +41,6 @@ def get_traffic_pressure(
         return rng.uniform(0.2, 0.6)
 
     if difficulty == "hard":
-        return rng.uniform(0.5, 1.0)
+        return rng.uniform(0.2, 0.6)
 
     return 0.0

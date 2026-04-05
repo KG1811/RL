@@ -80,8 +80,9 @@ def test_autonomous_control():
     final_score = evaluate_task(
         task_name="autonomous_control",
         action=action,
-        observation=obs,
+        observation=result.observation,
         metrics=result.metrics,
+        info=result.info,
     )
 
     print("Final Score:", final_score)

@@ -2,10 +2,10 @@ name: automind-openenv
 version: "1.0.0"
 
 description: >
-  AutoMind OpenEnv is a real-world automotive diagnosis, driving-decision,
-  and autonomous-control environment. It simulates ECU and TCU telemetry,
-  failures, traffic, GPS-aware service recommendation, reward shaping,
-  deterministic graders, and a live HTTP interface.
+  AutoMind OpenEnv is a fleet maintenance and roadside decision benchmark.
+  It simulates telemetry-driven diagnosis, safe maneuver selection,
+  service escalation, operator override, reward shaping, deterministic
+  graders, and a live HTTP interface for evaluating real-world agent behavior.
 
 entrypoint: main:app
 
@@ -43,9 +43,17 @@ observation_space:
     throttle: { type: number }
     gear: { type: integer }
     engine_load: { type: number }
+    transmission_load: { type: number }
     fuel_rate: { type: number }
     acceleration: { type: number }
     engine_temp: { type: number }
+    distance_to_obstacle: { type: number }
+    road_condition:
+      type: string
+      enum: [dry, wet, rain]
+    drive_mode:
+      type: string
+      enum: [idle, city, cruise, sport]
     oil_level: { type: number }
     battery_health: { type: number }
     latitude: { type: number }
@@ -56,15 +64,15 @@ observation_space:
 
 tasks:
   - name: fault_diagnosis
-    description: Detect overheating, low oil, or battery issue
+    description: Diagnose the active roadside maintenance issue from telemetry
     difficulty: easy
 
   - name: driving_decision
-    description: Choose safe driving actions from live telemetry
+    description: Select the safest immediate roadside maneuver from live telemetry
     difficulty: medium
 
   - name: autonomous_control
-    description: Full diagnosis + control + override + service recommendation
+    description: Coordinate safe recovery, service escalation, and degradation management
     difficulty: hard
 
 environment:

@@ -16,6 +16,7 @@ def update_oil_level(
     speed: float,
     engine_temp: float,
     low_oil_active: bool,
+    action_type: str,
 ) -> float:
     """
     Oil decreases slowly, faster under stress and if low-oil fault exists.
@@ -27,6 +28,12 @@ def update_oil_level(
 
     if low_oil_active:
         drain += 0.4
+
+    if action_type in {"brake", "stop", "request_service"}:
+        drain -= 0.18
+
+    if speed < 10:
+        drain -= 0.08
 
     return clamp(oil_level - drain, 0.0, 100.0)
 

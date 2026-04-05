@@ -21,10 +21,14 @@ class Observation(BaseModel):
     throttle: float = Field(..., ge=0, le=100)
     gear: int = Field(..., ge=0, le=6)
     engine_load: float = Field(..., ge=0, le=100)
+    transmission_load: float = Field(..., ge=0, le=100)
     fuel_rate: float = Field(..., ge=0, le=40)
     acceleration: float = Field(..., ge=-12, le=12)
 
     engine_temp: float = Field(..., ge=0, le=150)
+    distance_to_obstacle: float = Field(..., ge=0, le=300)
+    road_condition: str
+    drive_mode: str
 
     oil_level: float = Field(..., ge=0, le=100)
     battery_health: float = Field(..., ge=0, le=100)

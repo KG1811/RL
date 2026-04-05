@@ -53,13 +53,13 @@ def apply_action_to_speed(
     elif action_type == "brake":
         brake_effectiveness = 18.0 * action_value * friction
         if brake_failure:
-            brake_effectiveness *= 0.35
+            brake_effectiveness *= 0.55
         updated_speed -= brake_effectiveness
 
     elif action_type == "stop":
         stop_effectiveness = 28.0 * friction
         if brake_failure:
-            stop_effectiveness *= 0.4
+            stop_effectiveness *= 0.55
         updated_speed -= stop_effectiveness
 
     elif action_type in {"turn_left", "turn_right"}:
@@ -69,7 +69,7 @@ def apply_action_to_speed(
         updated_speed -= 0.5
 
     elif action_type == "request_service":
-        updated_speed -= 3.0
+        updated_speed -= 6.0
 
     return clamp(updated_speed, 0.0, 200.0)
 

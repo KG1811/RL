@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import random
+
 from models import Observation, HistoryItem, TelemetryState, FailureState
 from vehicle_dynamics import (
     apply_speed_decay,
@@ -187,6 +189,7 @@ class AutoMindSimulator:
             speed=powertrain["speed"],
             engine_temp=engine_temp,
             low_oil_active=state.failures.low_oil,
+            action_type=action_type,
         )
 
         battery_health = update_battery_health(
@@ -295,9 +298,13 @@ class AutoMindSimulator:
             throttle=next_state.throttle,
             gear=next_state.gear,
             engine_load=next_state.engine_load,
+            transmission_load=next_state.transmission_load,
             fuel_rate=next_state.fuel_rate,
             acceleration=next_state.acceleration,
             engine_temp=round(observed_engine_temp, 2),
+            distance_to_obstacle=round(observed_distance, 2),
+            road_condition=next_state.road_condition,
+            drive_mode=next_state.drive_mode,
             oil_level=next_state.oil_level,
             battery_health=next_state.battery_health,
             latitude=next_state.latitude,
